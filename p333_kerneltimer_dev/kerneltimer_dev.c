@@ -18,7 +18,8 @@
 #define   KERNELTIMER_DEV_MAJOR            240
 
 #define TIME_STEP	timeval  //KERNEL HZ=100
-#define DEBUG 1
+#define DEBUG 0
+#define DEBUG1 1
 #define IMX_GPIO_NR(bank, nr)       (((bank) - 1) * 32 + (nr))
 
 static int timeval = 100;	//f=100HZ, T=1/100 = 10ms, 100*10ms = 1Sec
@@ -32,7 +33,8 @@ typedef struct {
 	unsigned long 	  led;
 } __attribute__ ((packed)) KERNEL_TIMER_MANAGER;
 
-static KERNEL_TIMER_MANAGER* ptrmng = NULL;
+//static KERNEL_TIMER_MANAGER* ptrmng = NULL;
+void kerneltimer_registertimer(KERNEL_TIMER_MANAGER *pdata, unsigned long timeover);
 void kerneltimer_timeover(unsigned long arg);
 
 int key[] = {
@@ -128,13 +130,19 @@ static void key_read(char * key_data) {
 }
 
 static int ledkey_open (struct inode *inode, struct file *filp) {
+	KERNEL_TIMER_MANAGER* ptrmng = NULL;
     int num0 = MAJOR(inode->i_rdev);
     int num1 = MINOR(inode->i_rdev);
     printk( "call open -> major : %d\n", num0 );
     printk( "call open -> minor : %d\n", num1 );
 
-	led_init();
-	key_init();
+	ptrmng = (KERNEL_TIMER_MANAGER *)kmalloc( sizeof(KERNEL_TIMER_MANAGER ), GFP_KERNEL);
+//  filp->private_data = (KERNEL_TIMER_MANAGER *)kmalloc( sizeof(KERNEL_TIMER_MANAGER     ), GFP_KERNEL);
+    if(ptrmng == NULL) return -ENOMEM;
+    memset( ptrmng, 0, sizeof( KERNEL_TIMER_MANAGER));
+    ptrmng->led = ledval;
+    kerneltimer_registertimer( ptrmng, TIME_STEP);
+    filp->private_data = ptrmng;
     return 0;
 }
 
@@ -150,17 +158,22 @@ static ssize_t ledkey_read(struct file *filp, char *buf, size_t count, loff_t *f
 static ssize_t ledkey_write (struct file *filp, const char *buf, size_t count, loff_t *f_pos) {
     char kbuf;
     int ret;
+	KERNEL_TIMER_MANAGER* ptrmng = (KERNEL_TIMER_MANAGER*)filp->private_data;
 //  get_user(kbuf,buf);
     ret = copy_from_user(&kbuf,buf,count);
-    led_write(kbuf);
+	ptrmng->led = kbuf;
     return count;
 //  return -EFAULT;
 }
 
 static int ledkey_release (struct inode *inode, struct file *filp) {
+	KERNEL_TIMER_MANAGER* ptrmng = (KERNEL_TIMER_MANAGER*)filp->private_data;
     printk( "call release \n" );
-	led_exit();
-	key_exit();
+	if(timer_pending(&(ptrmng->timer)))
+        del_timer(&(ptrmng->timer));
+    if(ptrmng != NULL) {
+        kfree(ptrmng);
+    }
     return 0;
 }
 
@@ -185,7 +198,7 @@ void kerneltimer_timeover(unsigned long arg) {
 	if( arg ) {
 		pdata = ( KERNEL_TIMER_MANAGER *)arg;
 		led_write(pdata->led & 0x0f);
-#if DEBUG
+#if DEBUG1
 		printk("led : %#04x\n",(unsigned int)(pdata->led & 0x0000000f));
 #endif
 		pdata->led = ~(pdata->led);
@@ -196,31 +209,21 @@ void kerneltimer_timeover(unsigned long arg) {
 int kerneltimer_init(void) {
 	int result;
 
-	printk( "call ledkey_init \n" );
     result = register_chrdev( KERNELTIMER_DEV_MAJOR, KERNELTIMER_DEV_NAME, &ledkey_fops);
     if (result < 0) return result;
 
+	led_init();
+	key_init();
 	printk("timeval : %d , sec : %d\n",timeval,timeval/HZ);
 
-	ptrmng = (KERNEL_TIMER_MANAGER *)kmalloc( sizeof(KERNEL_TIMER_MANAGER ), GFP_KERNEL);
-	if(ptrmng == NULL) return -ENOMEM;
-	memset( ptrmng, 0, sizeof( KERNEL_TIMER_MANAGER));
-	ptrmng->led = ledval;
-	kerneltimer_registertimer( ptrmng, TIME_STEP);
 	return 0;
 }
 
 void kerneltimer_exit(void) {
-	if(timer_pending(&(ptrmng->timer)))
-		del_timer(&(ptrmng->timer));
-	if(ptrmng != NULL) {
-		kfree(ptrmng);
-	}
-
-	printk( "call ledkey_exit \n" );
-    unregister_chrdev( KERNELTIMER_DEV_MAJOR, KERNELTIMER_DEV_NAME );
-
 	led_write(0);
+	led_exit();
+	key_exit();
+    unregister_chrdev( KERNELTIMER_DEV_MAJOR, KERNELTIMER_DEV_NAME );
 }
 
 module_init(kerneltimer_init);
